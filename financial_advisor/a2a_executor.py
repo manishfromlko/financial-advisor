@@ -122,18 +122,38 @@ class FinancialAdvisorAgentExecutor(AgentExecutor):
             raise
 
     async def _resolve_user_id(self, context: RequestContext) -> str:
-        metadata_user = self._metadata_user_id(context)
-        if metadata_user:
-            return metadata_user
-
+        # Agent Engine playground context_id is a Vertex session. Prefer that
+        # session's real owner over generic metadata like user_id="user", which
+        # fails VertexAiSessionService ownership checks.
         if self._use_vertex_sessions and context.context_id:
             owner = await self._lookup_vertex_session_owner(context.context_id)
             if owner:
                 return owner
 
+        metadata_user = self._metadata_user_id(context)
+        if metadata_user and metadata_user not in {"user", "a2a-user", "a2a_user"}:
+            return metadata_user
+
         if context.context_id:
             return f"a2a-{context.context_id}"
         return "a2a-user"
+
+    async def _get_or_create_session(self, context_id: str | None, user_id: str):
+        app_name = self.runner.app_name
+        if context_id:
+            session = await self.runner.session_service.get_session(
+                app_name=app_name,
+                session_id=context_id,
+                user_id=user_id,
+            )
+            if session:
+                return session
+
+        return await self.runner.session_service.create_session(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=context_id,
+        )
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         if self.agent is None:
@@ -190,39 +210,6 @@ class FinancialAdvisorAgentExecutor(AgentExecutor):
                 message=new_agent_text_message(f"Error: {e!s}"),
             )
             raise
-
-    async def _get_or_create_session(self, context_id: str | None, user_id: str):
-        app_name = self.runner.app_name
-        if context_id:
-            try:
-                session = await self.runner.session_service.get_session(
-                    app_name=app_name,
-                    session_id=context_id,
-                    user_id=user_id,
-                )
-                if session:
-                    return session
-            except ValueError as e:
-                # Ownership mismatch — fall through to create only for in-memory.
-                logger.warning("get_session failed for %s: %s", context_id, e)
-                if self._use_vertex_sessions:
-                    # Playground already owns this session id; re-resolve owner once.
-                    owner = await self._lookup_vertex_session_owner(context_id)
-                    if owner and owner != user_id:
-                        session = await self.runner.session_service.get_session(
-                            app_name=app_name,
-                            session_id=context_id,
-                            user_id=owner,
-                        )
-                        if session:
-                            return session
-                    raise
-
-        return await self.runner.session_service.create_session(
-            app_name=app_name,
-            user_id=user_id,
-            session_id=context_id,
-        )
 
     async def cancel(
         self, context: RequestContext, event_queue: EventQueue
