@@ -92,6 +92,7 @@ A2A_AGENT_ENGINE_REQUIREMENTS = [
     "a2a-sdk[http-server] (>=0.3.22,<0.4.0)",
     "starlette (>=0.40.0)",
     "sse-starlette (>=2.0.0)",
+    "google-cloud-storage (>=2.14.0)",
     # Required for Agent Engine OpenTelemetry GenAI/http spans when telemetry is on.
     "opentelemetry-instrumentation-google-genai (>=0.4b0)",
     "opentelemetry-instrumentation-httpx (>=0.50b0)",
@@ -110,6 +111,15 @@ AGENT_ENGINE_ENV_VARS = {
 A2A_DISPLAY_NAME = "financial-advisor-a2a"
 
 
+def _a2a_env_vars(bucket: str) -> dict[str, str]:
+    """Env vars for A2A deploy, including shared task-store bucket."""
+    return {
+        **AGENT_ENGINE_ENV_VARS,
+        "A2A_TASK_STORE_BUCKET": bucket,
+        "GOOGLE_CLOUD_STORAGE_BUCKET": bucket,
+    }
+
+
 def _build_adk_app() -> AdkApp:
     """Build the AdkApp used for create/update.
 
@@ -123,10 +133,13 @@ def _build_a2a_agent() -> A2aAgent:
     """Build the A2A-wrapped financial advisor for Agent Engine."""
     from financial_advisor.a2a_config import agent_card
     from financial_advisor.a2a_executor import FinancialAdvisorAgentExecutor
+    from financial_advisor.a2a_task_store import build_gcs_task_store
 
     return A2aAgent(
         agent_card=agent_card,
         agent_executor_builder=FinancialAdvisorAgentExecutor,
+        # Share tasks across multi-process Agent Engine workers via GCS.
+        task_store_builder=build_gcs_task_store,
     )
 
 
@@ -161,7 +174,7 @@ def create_a2a(*, project_id: str, location: str, bucket: str) -> None:
             "description": a2a_agent.agent_card.description,
             "requirements": A2A_AGENT_ENGINE_REQUIREMENTS,
             "extra_packages": ["./financial_advisor"],
-            "env_vars": AGENT_ENGINE_ENV_VARS,
+            "env_vars": _a2a_env_vars(bucket),
             "staging_bucket": staging_bucket,
             "http_options": {"api_version": "v1beta1"},
         },
@@ -189,7 +202,7 @@ def update_a2a(*, resource_id: str, project_id: str, location: str, bucket: str)
             "description": a2a_agent.agent_card.description,
             "requirements": A2A_AGENT_ENGINE_REQUIREMENTS,
             "extra_packages": ["./financial_advisor"],
-            "env_vars": AGENT_ENGINE_ENV_VARS,
+            "env_vars": _a2a_env_vars(bucket),
             "staging_bucket": staging_bucket,
             "http_options": {"api_version": "v1beta1"},
         },
