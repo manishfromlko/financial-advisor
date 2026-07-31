@@ -14,15 +14,48 @@
 
 """Deployment script for Financial Advisor"""
 
+import json
 import os
+from typing import Any
 
 import vertexai
 from absl import app, flags
 from dotenv import load_dotenv
+from google.genai import types as genai_types
+from google.protobuf import json_format
 from vertexai import agent_engines
 from vertexai.preview.reasoning_engines import A2aAgent, AdkApp
 
 from financial_advisor.agent import root_agent
+
+
+def _patch_protobuf_json_for_pydantic_agent_cards() -> None:
+    """Allow Agent Engine deploy to serialize a2a-sdk pydantic AgentCards.
+
+    Current Vertex SDKs call protobuf json_format helpers on agent_card, but
+    a2a-sdk>=0.3 returns pydantic models. Convert those to JSON/dict instead.
+    """
+    if getattr(json_format, "_financial_advisor_pydantic_patch", False):
+        return
+
+    _orig_message_to_json = json_format.MessageToJson
+    _orig_message_to_dict = json_format.MessageToDict
+
+    def _message_to_json(message: Any, *args: Any, **kwargs: Any) -> str:
+        if hasattr(message, "model_dump_json"):
+            return message.model_dump_json(by_alias=True, exclude_none=True)
+        if hasattr(message, "model_dump"):
+            return json.dumps(message.model_dump(mode="json", by_alias=True, exclude_none=True))
+        return _orig_message_to_json(message, *args, **kwargs)
+
+    def _message_to_dict(message: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        if hasattr(message, "model_dump"):
+            return message.model_dump(mode="json", by_alias=True, exclude_none=True)
+        return _orig_message_to_dict(message, *args, **kwargs)
+
+    json_format.MessageToJson = _message_to_json  # type: ignore[assignment]
+    json_format.MessageToDict = _message_to_dict  # type: ignore[assignment]
+    json_format._financial_advisor_pydantic_patch = True  # type: ignore[attr-defined]
 
 FLAGS = flags.FLAGS
 flags.DEFINE_string("project_id", None, "GCP project ID.")
@@ -55,7 +88,9 @@ AGENT_ENGINE_REQUIREMENTS = [
 
 A2A_AGENT_ENGINE_REQUIREMENTS = [
     *AGENT_ENGINE_REQUIREMENTS,
-    "a2a-sdk (>=0.3.22,<0.4.0)",
+    "a2a-sdk[http-server] (>=0.3.22,<0.4.0)",
+    "starlette (>=0.40.0)",
+    "sse-starlette (>=2.0.0)",
 ]
 
 # Enables traces/logs in Agent Engine + GenAI semantic conventions.
@@ -100,19 +135,38 @@ def create() -> None:
     print(f"Created remote agent: {remote_agent.resource_name}")
 
 
-def create_a2a() -> None:
+def create_a2a(*, project_id: str, location: str, bucket: str) -> None:
     """Creates an A2A agent engine exposing the Financial Advisor."""
+    _patch_protobuf_json_for_pydantic_agent_cards()
     a2a_agent = _build_a2a_agent()
     display_name = FLAGS.display_name or A2A_DISPLAY_NAME
-    remote_agent = agent_engines.create(
-        a2a_agent,
-        display_name=display_name,
-        description=a2a_agent.agent_card.description,
-        requirements=A2A_AGENT_ENGINE_REQUIREMENTS,
-        extra_packages=["./financial_advisor"],
-        env_vars=AGENT_ENGINE_ENV_VARS,
+    staging_bucket = f"gs://{bucket}"
+
+    # Prefer the GenAI Client path used by A2A Agent Runtime samples.
+    client = vertexai.Client(
+        project=project_id,
+        location=location,
+        http_options=genai_types.HttpOptions(api_version="v1beta1"),
     )
-    print(f"Created A2A remote agent: {remote_agent.resource_name}")
+    remote_agent = client.agent_engines.create(
+        agent=a2a_agent,
+        config={
+            "display_name": display_name,
+            "description": a2a_agent.agent_card.description,
+            "requirements": A2A_AGENT_ENGINE_REQUIREMENTS,
+            "extra_packages": ["./financial_advisor"],
+            "env_vars": AGENT_ENGINE_ENV_VARS,
+            "staging_bucket": staging_bucket,
+            "http_options": {"api_version": "v1beta1"},
+        },
+    )
+    if hasattr(remote_agent, "api_resource") and remote_agent.api_resource is not None:
+        resource_name = remote_agent.api_resource.name
+    elif hasattr(remote_agent, "resource_name"):
+        resource_name = remote_agent.resource_name
+    else:
+        resource_name = str(remote_agent)
+    print(f"Created A2A remote agent: {resource_name}")
     print(f"Display name: {display_name}")
 
 
@@ -185,6 +239,9 @@ def main(argv: list[str]) -> None:
         if location == "global":
             location = "us-central1"
             print(f"Using Agent Engine region override: {location}")
+        os.environ["GOOGLE_CLOUD_PROJECT"] = project_id
+        os.environ["GOOGLE_CLOUD_LOCATION"] = location
+        os.environ["GOOGLE_CLOUD_STORAGE_BUCKET"] = bucket
 
     vertexai.init(
         project=project_id,
@@ -197,7 +254,7 @@ def main(argv: list[str]) -> None:
     elif FLAGS.create:
         create()
     elif FLAGS.create_a2a:
-        create_a2a()
+        create_a2a(project_id=project_id, location=location, bucket=bucket)
     elif FLAGS.update:
         if not FLAGS.resource_id:
             print("resource_id is required for update")
