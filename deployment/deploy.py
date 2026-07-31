@@ -20,7 +20,7 @@ import vertexai
 from absl import app, flags
 from dotenv import load_dotenv
 from vertexai import agent_engines
-from vertexai.preview.reasoning_engines import AdkApp
+from vertexai.preview.reasoning_engines import A2aAgent, AdkApp
 
 from financial_advisor.agent import root_agent
 
@@ -29,15 +29,22 @@ flags.DEFINE_string("project_id", None, "GCP project ID.")
 flags.DEFINE_string("location", None, "GCP location.")
 flags.DEFINE_string("bucket", None, "GCP bucket.")
 flags.DEFINE_string("resource_id", None, "ReasoningEngine resource ID.")
+flags.DEFINE_string(
+    "display_name",
+    None,
+    "Display name for create/update (defaults depend on mode).",
+)
 
 flags.DEFINE_bool("list", False, "List all agents.")
-flags.DEFINE_bool("create", False, "Creates a new agent.")
+flags.DEFINE_bool("create", False, "Creates a new ADK agent.")
+flags.DEFINE_bool("create_a2a", False, "Creates a new A2A agent.")
 flags.DEFINE_bool("update", False, "Updates an existing agent.")
 flags.DEFINE_bool("delete", False, "Deletes an existing agent.")
-flags.mark_bool_flags_as_mutual_exclusive(["create", "update", "delete"])
+flags.mark_bool_flags_as_mutual_exclusive(
+    ["create", "create_a2a", "update", "delete"]
+)
 
 # Floors required for Agent Engine Observability settings in Cloud Console.
-# See: google-cloud-aiplatform >= 1.126.1 and google-adk >= 1.18.0
 AGENT_ENGINE_REQUIREMENTS = [
     "google-adk (>=1.18.0)",
     "google-cloud-aiplatform[agent_engines] (>=1.126.1)",
@@ -46,14 +53,20 @@ AGENT_ENGINE_REQUIREMENTS = [
     "absl-py (>=2.2.1,<3.0.0)",
 ]
 
+A2A_AGENT_ENGINE_REQUIREMENTS = [
+    *AGENT_ENGINE_REQUIREMENTS,
+    "a2a-sdk (>=0.3.22,<0.4.0)",
+]
+
 # Enables traces/logs in Agent Engine + GenAI semantic conventions.
-# EVENT_ONLY puts prompt/response content in Cloud Logging events (not spans).
 AGENT_ENGINE_ENV_VARS = {
     "GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY": "true",
     "OTEL_SEMCONV_STABILITY_OPT_IN": "gen_ai_latest_experimental",
     "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "EVENT_ONLY",
     "ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS": "false",
 }
+
+A2A_DISPLAY_NAME = "financial-advisor-a2a"
 
 
 def _build_adk_app() -> AdkApp:
@@ -65,15 +78,42 @@ def _build_adk_app() -> AdkApp:
     return AdkApp(agent=root_agent)
 
 
+def _build_a2a_agent() -> A2aAgent:
+    """Build the A2A-wrapped financial advisor for Agent Engine."""
+    from financial_advisor.a2a_config import agent_card
+    from financial_advisor.a2a_executor import FinancialAdvisorAgentExecutor
+
+    return A2aAgent(
+        agent_card=agent_card,
+        agent_executor_builder=FinancialAdvisorAgentExecutor,
+    )
+
+
 def create() -> None:
-    """Creates an agent engine for Financial Advisors."""
+    """Creates an ADK agent engine for Financial Advisors."""
     remote_agent = agent_engines.create(
         _build_adk_app(),
-        display_name=root_agent.name,
+        display_name=FLAGS.display_name or root_agent.name,
         requirements=AGENT_ENGINE_REQUIREMENTS,
         env_vars=AGENT_ENGINE_ENV_VARS,
     )
     print(f"Created remote agent: {remote_agent.resource_name}")
+
+
+def create_a2a() -> None:
+    """Creates an A2A agent engine exposing the Financial Advisor."""
+    a2a_agent = _build_a2a_agent()
+    display_name = FLAGS.display_name or A2A_DISPLAY_NAME
+    remote_agent = agent_engines.create(
+        a2a_agent,
+        display_name=display_name,
+        description=a2a_agent.agent_card.description,
+        requirements=A2A_AGENT_ENGINE_REQUIREMENTS,
+        extra_packages=["./financial_advisor"],
+        env_vars=AGENT_ENGINE_ENV_VARS,
+    )
+    print(f"Created A2A remote agent: {remote_agent.resource_name}")
+    print(f"Display name: {display_name}")
 
 
 def update(resource_id: str) -> None:
@@ -140,6 +180,12 @@ def main(argv: list[str]) -> None:
         )
         return
 
+    # Package __init__ forces LOCATION=global for GenAI; Agent Engine needs a region.
+    if FLAGS.create or FLAGS.create_a2a or FLAGS.update:
+        if location == "global":
+            location = "us-central1"
+            print(f"Using Agent Engine region override: {location}")
+
     vertexai.init(
         project=project_id,
         location=location,
@@ -150,6 +196,8 @@ def main(argv: list[str]) -> None:
         list_agents()
     elif FLAGS.create:
         create()
+    elif FLAGS.create_a2a:
+        create_a2a()
     elif FLAGS.update:
         if not FLAGS.resource_id:
             print("resource_id is required for update")

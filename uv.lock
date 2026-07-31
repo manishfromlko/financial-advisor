@@ -9,6 +9,22 @@ resolution-markers = [
 ]
 
 [[package]]
+name = "a2a-sdk"
+version = "0.3.26"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "google-api-core" },
+    { name = "httpx" },
+    { name = "httpx-sse" },
+    { name = "protobuf" },
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/be/97/a6840e01795b182ce751ca165430d46459927cde9bfab838087cbb24aef7/a2a_sdk-0.3.26.tar.gz", hash = "sha256:44068e2d037afbb07ab899267439e9bc7eaa7ac2af94f1e8b239933c993ad52d", size = 274598, upload-time = "2026-04-09T15:21:13.902Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/dd/d5/51f4ee1bf3b736add42a542d3c8a3fd3fa85f3d36c17972127defc46c26f/a2a_sdk-0.3.26-py3-none-any.whl", hash = "sha256:754e0573f6d33b225c1d8d51f640efa69cbbed7bdfb06ce9c3540ea9f58d4a91", size = 151016, upload-time = "2026-04-09T15:21:12.35Z" },
+]
+
+[[package]]
 name = "absl-py"
 version = "2.4.0"
 source = { registry = "https://pypi.org/simple" }
@@ -585,7 +601,8 @@ name = "financial-advisor"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "google-adk" },
+    { name = "a2a-sdk" },
+    { name = "google-adk", extra = ["a2a"] },
     { name = "google-cloud-aiplatform", extra = ["adk", "agent-engines"] },
     { name = "google-genai" },
     { name = "pydantic" },
@@ -611,7 +628,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "google-adk", specifier = ">=1.18.0" },
+    { name = "a2a-sdk", specifier = ">=0.3.22,<0.4.0" },
+    { name = "google-adk", extras = ["a2a"], specifier = ">=1.18.0" },
     { name = "google-cloud-aiplatform", extras = ["adk", "agent-engines"], specifier = ">=1.126.1" },
     { name = "google-genai", specifier = ">=1.9.0" },
     { name = "pydantic", specifier = ">=2.10.6" },
@@ -710,9 +728,10 @@ wheels = [
 
 [[package]]
 name = "google-adk"
-version = "2.2.0"
+version = "2.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
+    { name = "aiohttp" },
     { name = "aiosqlite" },
     { name = "authlib" },
     { name = "click" },
@@ -738,15 +757,19 @@ dependencies = [
     { name = "watchdog" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4a/65/3ff3f50b10dac3323ddecd694515e9f9ed345886e0eaf666d0e42c90748b/google_adk-2.2.0.tar.gz", hash = "sha256:04cb6318aba8829fe7c941ee1b456ccb4745253898c13595708c9eb07b4582ff", size = 3391545, upload-time = "2026-06-04T22:15:12.9Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/30/83/db3c747a3679f4c4c651e12351d660c8759fcdbcaca28dd44a48e155ff4a/google_adk-2.6.0.tar.gz", hash = "sha256:f0b30e26f22602c240faf0aea75b6b42b3487288da3335da3c8474bcc8c82f29", size = 3713485, upload-time = "2026-07-30T17:59:29.559Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/64/f5/44a3b20b17bac130497f2d1dde8b93c90cfc026983cd94f24488d540ea70/google_adk-2.2.0-py3-none-any.whl", hash = "sha256:ebdf3d931dc2b9c5b30d995358fc2ae99d59594c48a4aaf7496869ccd2c5f245", size = 3912613, upload-time = "2026-06-04T22:15:15.411Z" },
+    { url = "https://files.pythonhosted.org/packages/84/5d/1864ab28ea2fe6f288c0a4b859e620819ac2ac48ddfe6f8096efb821f7c6/google_adk-2.6.0-py3-none-any.whl", hash = "sha256:f51556261cd2d53f45567ca3e9284299792549c57096f0b14c0ffe10a939c408", size = 4296977, upload-time = "2026-07-30T17:59:27.52Z" },
 ]
 
 [package.optional-dependencies]
+a2a = [
+    { name = "a2a-sdk" },
+]
 eval = [
     { name = "gepa" },
     { name = "google-cloud-aiplatform", extra = ["evaluation"] },
+    { name = "google-cloud-texttospeech" },
     { name = "jinja2" },
     { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "pandas", version = "3.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
@@ -778,20 +801,20 @@ grpc = [
 
 [[package]]
 name = "google-auth"
-version = "2.52.0"
+version = "2.56.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cryptography" },
     { name = "pyasn1-modules" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d4/f8/80d2493cbedece1c623dc3e3cb1883300871af0dcdae254409522985ac23/google_auth-2.52.0.tar.gz", hash = "sha256:01f30e1a9e3638698d89464f5e603ce29d18e1c0e63ec31ac570aba4e164aaf5", size = 335027, upload-time = "2026-05-07T19:45:24.033Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c7/33/dbc946a407401b975f0719658f18e664ece2109f79ffd1ff3bf226c205f4/google_auth-2.56.2.tar.gz", hash = "sha256:e28f103ca8091fb7012b99c44243d7366c29863713b8e34a220c3322b7a07051", size = 365820, upload-time = "2026-07-21T21:53:28.188Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ee/fc/2cdc74252746f547f81ff3f02d4d4234a3f411b5de5b61af97e633a060b9/google_auth-2.52.0-py3-none-any.whl", hash = "sha256:aee92803ba0ff93a70a3b8a35c7b4797837751cd6380b63ff38372b98f3ed627", size = 245614, upload-time = "2026-05-07T19:45:21.914Z" },
+    { url = "https://files.pythonhosted.org/packages/88/63/50636aae68c9bf17c891c7eb18b49baa9bd6b31d2a97b8de4813a9fc8d1c/google_auth-2.56.2-py3-none-any.whl", hash = "sha256:c8270ea95b2697b74e3d8438ae9c5b898e38b623b915c7b5c5635921e7de68a6", size = 258588, upload-time = "2026-07-21T21:53:26.399Z" },
 ]
 
 [package.optional-dependencies]
 pyopenssl = [
-    { name = "pyopenssl" },
+    { name = "cryptography" },
 ]
 requests = [
     { name = "requests" },
@@ -984,6 +1007,22 @@ wheels = [
 ]
 
 [[package]]
+name = "google-cloud-texttospeech"
+version = "2.37.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "google-api-core", extra = ["grpc"] },
+    { name = "google-auth" },
+    { name = "grpcio" },
+    { name = "proto-plus" },
+    { name = "protobuf" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/af/bf/42e7d2f32d79c75bc23f949e97a278d46b7d08638e94b570947be02e3bce/google_cloud_texttospeech-2.37.0.tar.gz", hash = "sha256:db726382f393ceb6b36002c35abd62b53c4d8e17fc2f31df8b07fd0fabbe4f8b", size = 196465, upload-time = "2026-06-22T23:22:37.28Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3b/44/675358f0b939f14ae6481dddecbde5fd91b92b51f7991a70d98d3c68c02e/google_cloud_texttospeech-2.37.0-py3-none-any.whl", hash = "sha256:911f42f327027975d7781efcace1993afdf311b692b95b6814b71085750cc38a", size = 199697, upload-time = "2026-06-22T23:20:37.235Z" },
+]
+
+[[package]]
 name = "google-cloud-trace"
 version = "1.19.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1026,7 +1065,7 @@ wheels = [
 
 [[package]]
 name = "google-genai"
-version = "2.8.0"
+version = "2.16.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -1040,9 +1079,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/5b/52/0244e310812f3063d09d60b30ae29ab7df9343bd005744cd5eeaa6ba39b4/google_genai-2.8.0.tar.gz", hash = "sha256:37a9b3cb127d763e7f4ca47452ae3562c87728773bd1b149f7b559c239da2bc1", size = 564955, upload-time = "2026-06-03T22:55:38.397Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/81/e6/ff83088427072cc9d5d21036788cf0ed08cc4906e4a5810e469553a43185/google_genai-2.16.0.tar.gz", hash = "sha256:c4c2524926001b18073db927a5d75bb7c8be7b5fd13ab507d599f51fff2284c5", size = 647939, upload-time = "2026-07-30T14:34:37.366Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e2/de/747ad1aa49e902da9a4699081c282a1ed8ceed3b4d295fd99a6d286e09e4/google_genai-2.8.0-py3-none-any.whl", hash = "sha256:4da0a223a100f4b37f609a68b835e3326ab0fa313314dc0fd9d34e76ee293844", size = 832497, upload-time = "2026-06-03T22:55:36.598Z" },
+    { url = "https://files.pythonhosted.org/packages/3b/c6/f111056110030b1a5fb949687d7f93c2b4e8996f6494ae32efb049482796/google_genai-2.16.0-py3-none-any.whl", hash = "sha256:f9eda6a7a3dd4491a0d2253c4bdd4536462d63838ed3f1b0e4fb9a0eb8f43331", size = 1050096, upload-time = "2026-07-30T14:34:35.578Z" },
 ]
 
 [[package]]
@@ -1203,6 +1242,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/b1/df/48c586a5fe32a0f01324ee087459e112ebb7224f646c0b5023f5e79e9956/httpx-0.28.1.tar.gz", hash = "sha256:75e98c5f16b0f35b567856f597f06ff2270a374470a5c2392242528e3e3e42fc", size = 141406, upload-time = "2024-12-06T15:37:23.222Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/2a/39/e50c7c3a983047577ee07d2a9e53faf5a69493943ec3f6a384bdc792deb2/httpx-0.28.1-py3-none-any.whl", hash = "sha256:d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad", size = 73517, upload-time = "2024-12-06T15:37:21.509Z" },
+]
+
+[[package]]
+name = "httpx-sse"
+version = "0.4.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/0f/4c/751061ffa58615a32c31b2d82e8482be8dd4a89154f003147acee90f2be9/httpx_sse-0.4.3.tar.gz", hash = "sha256:9b1ed0127459a66014aec3c56bebd93da3c1bc8bb6618c8082039a44889a755d", size = 15943, upload-time = "2025-10-10T21:48:22.271Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d2/fd/6668e5aec43ab844de6fc74927e155a3b37bf40d7c3790e49fc0406b6578/httpx_sse-0.4.3-py3-none-any.whl", hash = "sha256:0ac1c9fe3c0afad2e0ebb25a934a59f4c7823b60792691f779fad2c5568830fc", size = 8960, upload-time = "2025-10-10T21:48:21.158Z" },
 ]
 
 [[package]]
@@ -2187,19 +2235,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/c3/b2/bc9c9196916376152d655522fdcebac55e66de6603a76a02bca1b6414f6c/pygments-2.20.0.tar.gz", hash = "sha256:6757cd03768053ff99f3039c1a36d6c0aa0b263438fcab17520b30a303a82b5f", size = 4955991, upload-time = "2026-03-29T13:29:33.898Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f4/7e/a72dd26f3b0f4f2bf1dd8923c85f7ceb43172af56d63c7383eb62b332364/pygments-2.20.0-py3-none-any.whl", hash = "sha256:81a9e26dd42fd28a23a2d169d86d7ac03b46e2f8b59ed4698fb4785f946d0176", size = 1231151, upload-time = "2026-03-29T13:29:30.038Z" },
-]
-
-[[package]]
-name = "pyopenssl"
-version = "26.2.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "cryptography" },
-    { name = "typing-extensions" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/1a/51/27a5ad5f939d08f690a326ef9582cda7140555180db71695f6fb747d6a36/pyopenssl-26.2.0.tar.gz", hash = "sha256:8c6fcecd1183a7fc897548dfe388b0cdb7f37e018200d8409cf33959dbe35387", size = 182195, upload-time = "2026-05-04T23:06:09.72Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/73/b8/a0e2790ae249d6f38c9f66de7a211621a7ab2650217bcd04e1262f578a56/pyopenssl-26.2.0-py3-none-any.whl", hash = "sha256:4f9d971bc5298b8bc1fab282803da04bf000c755d4ad9d99b52de2569ca19a70", size = 55823, upload-time = "2026-05-04T23:06:08.395Z" },
 ]
 
 [[package]]

@@ -1,0 +1,44 @@
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""A2A agent card for the Financial Advisor multi-agent system."""
+
+from a2a.types import AgentSkill
+from vertexai.preview.reasoning_engines.templates.a2a import create_agent_card
+
+financial_advisor_skill = AgentSkill(
+    id="financial_advisory",
+    name="Financial Advisory Workflow",
+    description=(
+        "Guide users through market analysis, trading strategy development, "
+        "execution planning, and risk evaluation for a given ticker."
+    ),
+    tags=["finance", "trading", "risk", "market-analysis", "multi-agent"],
+    examples=[
+        "Analyze AAPL",
+        "Build trading strategies for MSFT with moderate risk and a 6-month horizon",
+        "Evaluate downside risk for a proposed NVDA execution plan",
+    ],
+    input_modes=["text/plain"],
+    output_modes=["text/plain"],
+)
+
+agent_card = create_agent_card(
+    agent_name="financial-advisor-a2a",
+    description=(
+        "A2A-exposed financial advisor that orchestrates data, trading, "
+        "execution, and risk analyst sub-agents."
+    ),
+    skills=[financial_advisor_skill],
+)
