@@ -16,8 +16,11 @@
 
 from __future__ import annotations
 
+import logging
+import os
 from typing import NoReturn
 
+import vertexai
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
 from a2a.server.tasks import TaskUpdater
@@ -27,40 +30,65 @@ from a2a.utils.errors import ServerError
 from google.adk.artifacts import InMemoryArtifactService
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService
+from google.adk.sessions import InMemorySessionService, VertexAiSessionService
+from google.adk.utils.context_utils import Aclosing
 from google.genai import types
+from google.genai.errors import ClientError
 
 from financial_advisor.agent import root_agent as financial_advisor_agent
+
+logger = logging.getLogger(__name__)
 
 
 class FinancialAdvisorAgentExecutor(AgentExecutor):
     """Bridge between A2A requests and the ADK financial coordinator.
 
-    Uses InMemorySessionService (same pattern as the Agent Engine A2A docs).
-    Agent Engine playground context_ids are Vertex sessions owned by the
-    console user; looking them up via VertexAiSessionService with a default
-    a2a-user id raises ownership errors, so we keep ADK sessions in-memory.
+    On Agent Engine, uses VertexAiSessionService keyed by the playground
+    session (context_id) and the session's real owner user_id. Locally uses
+    InMemorySessionService.
     """
 
     def __init__(self) -> None:
         self.agent = None
         self.runner = None
+        self._use_vertex_sessions = False
 
     def _init_agent(self) -> None:
         if self.agent is not None:
             return
 
         self.agent = financial_advisor_agent
+        engine_id = os.environ.get("GOOGLE_CLOUD_AGENT_ENGINE_ID")
+
+        if engine_id:
+            project = os.environ.get("GOOGLE_CLOUD_PROJECT")
+            location = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
+            if location == "global":
+                location = "us-central1"
+            vertexai.init(project=project, location=location)
+            session_service = VertexAiSessionService(
+                project=project,
+                location=location,
+                agent_engine_id=engine_id,
+            )
+            # Playground sessions belong to this Reasoning Engine id.
+            app_name = engine_id
+            self._use_vertex_sessions = True
+        else:
+            session_service = InMemorySessionService()
+            app_name = self.agent.name
+            self._use_vertex_sessions = False
+
         self.runner = Runner(
-            app_name=self.agent.name,
+            app_name=app_name,
             agent=self.agent,
             artifact_service=InMemoryArtifactService(),
-            session_service=InMemorySessionService(),
+            session_service=session_service,
             memory_service=InMemoryMemoryService(),
         )
 
     @staticmethod
-    def _resolve_user_id(context: RequestContext) -> str:
+    def _metadata_user_id(context: RequestContext) -> str | None:
         metadata = {}
         if context.message and context.message.metadata:
             metadata.update(context.message.metadata)
@@ -70,7 +98,39 @@ class FinancialAdvisorAgentExecutor(AgentExecutor):
             value = metadata.get(key)
             if value:
                 return str(value)
-        # Fall back to a stable per-context id so playground turns stay isolated.
+        return None
+
+    async def _lookup_vertex_session_owner(self, session_id: str) -> str | None:
+        """Read the playground session owner so get_session ownership checks pass."""
+        if not isinstance(self.runner.session_service, VertexAiSessionService):
+            return None
+        reasoning_engine_id = self.runner.session_service._get_reasoning_engine_id(
+            self.runner.app_name
+        )
+        session_resource_name = (
+            f"reasoningEngines/{reasoning_engine_id}/sessions/{session_id}"
+        )
+        try:
+            async with self.runner.session_service._get_api_client() as api_client:
+                response = await api_client.agent_engines.sessions.get(
+                    name=session_resource_name
+                )
+            return getattr(response, "user_id", None)
+        except ClientError as e:
+            if getattr(e, "code", None) == 404:
+                return None
+            raise
+
+    async def _resolve_user_id(self, context: RequestContext) -> str:
+        metadata_user = self._metadata_user_id(context)
+        if metadata_user:
+            return metadata_user
+
+        if self._use_vertex_sessions and context.context_id:
+            owner = await self._lookup_vertex_session_owner(context.context_id)
+            if owner:
+                return owner
+
         if context.context_id:
             return f"a2a-{context.context_id}"
         return "a2a-user"
@@ -81,7 +141,7 @@ class FinancialAdvisorAgentExecutor(AgentExecutor):
 
         query = context.get_user_input()
         updater = TaskUpdater(event_queue, context.task_id, context.context_id)
-        user_id = self._resolve_user_id(context)
+        user_id = await self._resolve_user_id(context)
 
         if not context.current_task:
             await updater.submit()
@@ -91,17 +151,31 @@ class FinancialAdvisorAgentExecutor(AgentExecutor):
             session = await self._get_or_create_session(context.context_id, user_id)
             content = types.Content(role="user", parts=[types.Part(text=query)])
 
-            async for event in self.runner.run_async(
-                session_id=session.id,
-                user_id=user_id,
-                new_message=content,
-            ):
-                if event.is_final_response():
-                    parts = event.content.parts if event.content else []
-                    answer = " ".join(p.text for p in parts if p.text) or "No response."
-                    await updater.add_artifact([TextPart(text=answer)], name="answer")
-                    await updater.complete()
-                    return
+            # Do not return inside the async-for: that cancels the ADK runner
+            # (GeneratorExit / "Root node was cancelled") and can make the
+            # playground wipe the conversation even after a good reply.
+            final_answer: str | None = None
+            async with Aclosing(
+                self.runner.run_async(
+                    session_id=session.id,
+                    user_id=user_id,
+                    new_message=content,
+                )
+            ) as agen:
+                async for event in agen:
+                    if event.is_final_response():
+                        parts = event.content.parts if event.content else []
+                        final_answer = (
+                            " ".join(p.text for p in parts if p.text) or "No response."
+                        )
+                        break
+
+            if final_answer is not None:
+                await updater.add_artifact(
+                    [TextPart(text=final_answer)], name="answer"
+                )
+                await updater.complete()
+                return
 
             await updater.update_status(
                 TaskState.failed,
@@ -110,6 +184,7 @@ class FinancialAdvisorAgentExecutor(AgentExecutor):
                 ),
             )
         except Exception as e:
+            logger.exception("A2A agent execution failed")
             await updater.update_status(
                 TaskState.failed,
                 message=new_agent_text_message(f"Error: {e!s}"),
@@ -119,13 +194,30 @@ class FinancialAdvisorAgentExecutor(AgentExecutor):
     async def _get_or_create_session(self, context_id: str | None, user_id: str):
         app_name = self.runner.app_name
         if context_id:
-            session = await self.runner.session_service.get_session(
-                app_name=app_name,
-                session_id=context_id,
-                user_id=user_id,
-            )
-            if session:
-                return session
+            try:
+                session = await self.runner.session_service.get_session(
+                    app_name=app_name,
+                    session_id=context_id,
+                    user_id=user_id,
+                )
+                if session:
+                    return session
+            except ValueError as e:
+                # Ownership mismatch — fall through to create only for in-memory.
+                logger.warning("get_session failed for %s: %s", context_id, e)
+                if self._use_vertex_sessions:
+                    # Playground already owns this session id; re-resolve owner once.
+                    owner = await self._lookup_vertex_session_owner(context_id)
+                    if owner and owner != user_id:
+                        session = await self.runner.session_service.get_session(
+                            app_name=app_name,
+                            session_id=context_id,
+                            user_id=owner,
+                        )
+                        if session:
+                            return session
+                    raise
+
         return await self.runner.session_service.create_session(
             app_name=app_name,
             user_id=user_id,
