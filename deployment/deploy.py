@@ -71,10 +71,11 @@ flags.DEFINE_string(
 flags.DEFINE_bool("list", False, "List all agents.")
 flags.DEFINE_bool("create", False, "Creates a new ADK agent.")
 flags.DEFINE_bool("create_a2a", False, "Creates a new A2A agent.")
-flags.DEFINE_bool("update", False, "Updates an existing agent.")
+flags.DEFINE_bool("update", False, "Updates an existing ADK agent.")
+flags.DEFINE_bool("update_a2a", False, "Updates an existing A2A agent.")
 flags.DEFINE_bool("delete", False, "Deletes an existing agent.")
 flags.mark_bool_flags_as_mutual_exclusive(
-    ["create", "create_a2a", "update", "delete"]
+    ["create", "create_a2a", "update", "update_a2a", "delete"]
 )
 
 # Floors required for Agent Engine Observability settings in Cloud Console.
@@ -91,6 +92,11 @@ A2A_AGENT_ENGINE_REQUIREMENTS = [
     "a2a-sdk[http-server] (>=0.3.22,<0.4.0)",
     "starlette (>=0.40.0)",
     "sse-starlette (>=2.0.0)",
+    # Required for Agent Engine OpenTelemetry GenAI/http spans when telemetry is on.
+    "opentelemetry-instrumentation-google-genai (>=0.4b0)",
+    "opentelemetry-instrumentation-httpx (>=0.50b0)",
+    "opentelemetry-instrumentation-grpc (>=0.50b0)",
+    "opentelemetry-instrumentation-fastapi (>=0.50b0)",
 ]
 
 # Enables traces/logs in Agent Engine + GenAI semantic conventions.
@@ -160,14 +166,44 @@ def create_a2a(*, project_id: str, location: str, bucket: str) -> None:
             "http_options": {"api_version": "v1beta1"},
         },
     )
-    if hasattr(remote_agent, "api_resource") and remote_agent.api_resource is not None:
-        resource_name = remote_agent.api_resource.name
-    elif hasattr(remote_agent, "resource_name"):
-        resource_name = remote_agent.resource_name
-    else:
-        resource_name = str(remote_agent)
+    resource_name = _resource_name(remote_agent)
     print(f"Created A2A remote agent: {resource_name}")
     print(f"Display name: {display_name}")
+
+
+def update_a2a(*, resource_id: str, project_id: str, location: str, bucket: str) -> None:
+    """Updates an existing A2A agent with current code, deps, and telemetry env."""
+    _patch_protobuf_json_for_pydantic_agent_cards()
+    a2a_agent = _build_a2a_agent()
+    staging_bucket = f"gs://{bucket}"
+    client = vertexai.Client(
+        project=project_id,
+        location=location,
+        http_options=genai_types.HttpOptions(api_version="v1beta1"),
+    )
+    remote_agent = client.agent_engines.update(
+        name=resource_id,
+        agent=a2a_agent,
+        config={
+            "display_name": FLAGS.display_name or A2A_DISPLAY_NAME,
+            "description": a2a_agent.agent_card.description,
+            "requirements": A2A_AGENT_ENGINE_REQUIREMENTS,
+            "extra_packages": ["./financial_advisor"],
+            "env_vars": AGENT_ENGINE_ENV_VARS,
+            "staging_bucket": staging_bucket,
+            "http_options": {"api_version": "v1beta1"},
+        },
+    )
+    resource_name = _resource_name(remote_agent)
+    print(f"Updated A2A remote agent: {resource_name}")
+
+
+def _resource_name(remote_agent: Any) -> str:
+    if hasattr(remote_agent, "api_resource") and remote_agent.api_resource is not None:
+        return remote_agent.api_resource.name
+    if hasattr(remote_agent, "resource_name"):
+        return remote_agent.resource_name
+    return str(remote_agent)
 
 
 def update(resource_id: str) -> None:
@@ -235,7 +271,7 @@ def main(argv: list[str]) -> None:
         return
 
     # Package __init__ forces LOCATION=global for GenAI; Agent Engine needs a region.
-    if FLAGS.create or FLAGS.create_a2a or FLAGS.update:
+    if FLAGS.create or FLAGS.create_a2a or FLAGS.update or FLAGS.update_a2a:
         if location == "global":
             location = "us-central1"
             print(f"Using Agent Engine region override: {location}")
@@ -260,6 +296,16 @@ def main(argv: list[str]) -> None:
             print("resource_id is required for update")
             return
         update(FLAGS.resource_id)
+    elif FLAGS.update_a2a:
+        if not FLAGS.resource_id:
+            print("resource_id is required for update_a2a")
+            return
+        update_a2a(
+            resource_id=FLAGS.resource_id,
+            project_id=project_id,
+            location=location,
+            bucket=bucket,
+        )
     elif FLAGS.delete:
         if not FLAGS.resource_id:
             print("resource_id is required for delete")
