@@ -16,10 +16,8 @@
 
 from __future__ import annotations
 
-import os
 from typing import NoReturn
 
-import vertexai
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
 from a2a.server.tasks import TaskUpdater
@@ -29,7 +27,7 @@ from a2a.utils.errors import ServerError
 from google.adk.artifacts import InMemoryArtifactService
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService, VertexAiSessionService
+from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
 from financial_advisor.agent import root_agent as financial_advisor_agent
@@ -38,8 +36,10 @@ from financial_advisor.agent import root_agent as financial_advisor_agent
 class FinancialAdvisorAgentExecutor(AgentExecutor):
     """Bridge between A2A requests and the ADK financial coordinator.
 
-    Uses InMemorySessionService locally and VertexAiSessionService when
-    deployed to Agent Engine (GOOGLE_CLOUD_AGENT_ENGINE_ID is set).
+    Uses InMemorySessionService (same pattern as the Agent Engine A2A docs).
+    Agent Engine playground context_ids are Vertex sessions owned by the
+    console user; looking them up via VertexAiSessionService with a default
+    a2a-user id raises ownership errors, so we keep ADK sessions in-memory.
     """
 
     def __init__(self) -> None:
@@ -51,32 +51,29 @@ class FinancialAdvisorAgentExecutor(AgentExecutor):
             return
 
         self.agent = financial_advisor_agent
-        engine_id = os.environ.get("GOOGLE_CLOUD_AGENT_ENGINE_ID")
-
-        if engine_id:
-            project = os.environ.get("GOOGLE_CLOUD_PROJECT")
-            location = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
-            # Agent Engine injects location; avoid the package __init__ "global" default.
-            if location == "global":
-                location = "us-central1"
-            vertexai.init(project=project, location=location)
-            session_service = VertexAiSessionService(
-                project=project,
-                location=location,
-                agent_engine_id=engine_id,
-            )
-            app_name = engine_id
-        else:
-            session_service = InMemorySessionService()
-            app_name = self.agent.name
-
         self.runner = Runner(
-            app_name=app_name,
+            app_name=self.agent.name,
             agent=self.agent,
             artifact_service=InMemoryArtifactService(),
-            session_service=session_service,
+            session_service=InMemorySessionService(),
             memory_service=InMemoryMemoryService(),
         )
+
+    @staticmethod
+    def _resolve_user_id(context: RequestContext) -> str:
+        metadata = {}
+        if context.message and context.message.metadata:
+            metadata.update(context.message.metadata)
+        if context.metadata:
+            metadata.update(context.metadata)
+        for key in ("user_id", "userId", "USER_ID"):
+            value = metadata.get(key)
+            if value:
+                return str(value)
+        # Fall back to a stable per-context id so playground turns stay isolated.
+        if context.context_id:
+            return f"a2a-{context.context_id}"
+        return "a2a-user"
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         if self.agent is None:
@@ -84,11 +81,7 @@ class FinancialAdvisorAgentExecutor(AgentExecutor):
 
         query = context.get_user_input()
         updater = TaskUpdater(event_queue, context.task_id, context.context_id)
-        user_id = (
-            context.message.metadata.get("user_id", "a2a-user")
-            if context.message and context.message.metadata
-            else "a2a-user"
-        )
+        user_id = self._resolve_user_id(context)
 
         if not context.current_task:
             await updater.submit()
@@ -108,7 +101,14 @@ class FinancialAdvisorAgentExecutor(AgentExecutor):
                     answer = " ".join(p.text for p in parts if p.text) or "No response."
                     await updater.add_artifact([TextPart(text=answer)], name="answer")
                     await updater.complete()
-                    break
+                    return
+
+            await updater.update_status(
+                TaskState.failed,
+                message=new_agent_text_message(
+                    "Failed to generate a final response with text content."
+                ),
+            )
         except Exception as e:
             await updater.update_status(
                 TaskState.failed,
@@ -116,7 +116,7 @@ class FinancialAdvisorAgentExecutor(AgentExecutor):
             )
             raise
 
-    async def _get_or_create_session(self, context_id: str, user_id: str):
+    async def _get_or_create_session(self, context_id: str | None, user_id: str):
         app_name = self.runner.app_name
         if context_id:
             session = await self.runner.session_service.get_session(
