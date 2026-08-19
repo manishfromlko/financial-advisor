@@ -22,5 +22,8 @@ from . import agent
 
 _, project_id = google.auth.default()
 os.environ.setdefault("GOOGLE_CLOUD_PROJECT", project_id)
-os.environ["GOOGLE_CLOUD_LOCATION"] = "global"
+# Agent Engine set_up / deploy env_vars may already set a region; do not
+# force "global" over that. Local GenAI defaults to global when unset.
+if not os.environ.get("GOOGLE_CLOUD_AGENT_ENGINE_ID"):
+    os.environ.setdefault("GOOGLE_CLOUD_LOCATION", "global")
 os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "True")

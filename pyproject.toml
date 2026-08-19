@@ -68,6 +68,9 @@ exclude = [".venv"]
 [tool.pytest.ini_options]
 pythonpath = "."
 asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "live: hits deployed Agent Engine Playground paths (A2A message:send or ADK streamQuery; needs gcloud auth)",
+]
 
 [tool.hatch.build.targets.wheel]
 # Ensures Hatchling finds the package folder correctly

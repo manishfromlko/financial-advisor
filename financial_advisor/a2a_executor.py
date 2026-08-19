@@ -39,6 +39,14 @@ from financial_advisor.agent import root_agent as financial_advisor_agent
 
 logger = logging.getLogger(__name__)
 
+EMPTY_FINAL_RESPONSE_MESSAGE = (
+    "The model returned no text for this turn. "
+    "This often means Gemini safety filters or "
+    "Model Armor blocked the prompt/response. "
+    "Check Model Armor / Security findings, or "
+    "retry with a normal request such as: Analyze AAPL"
+)
+
 
 class FinancialAdvisorAgentExecutor(AgentExecutor):
     """Bridge between A2A requests and the ADK financial coordinator.
@@ -174,7 +182,12 @@ class FinancialAdvisorAgentExecutor(AgentExecutor):
             # Do not return inside the async-for: that cancels the ADK runner
             # (GeneratorExit / "Root node was cancelled") and can make the
             # playground wipe the conversation even after a good reply.
+            # Collect the last non-empty model text as a fallback: for blocked
+            # / jailbreak prompts Gemini often marks a "final" event with no
+            # text parts, which previously became a blank "No response." in
+            # the playground.
             final_answer: str | None = None
+            last_model_text: str | None = None
             async with Aclosing(
                 self.runner.run_async(
                     session_id=session.id,
@@ -183,11 +196,28 @@ class FinancialAdvisorAgentExecutor(AgentExecutor):
                 )
             ) as agen:
                 async for event in agen:
+                    if event.content and event.content.parts:
+                        texts = [
+                            p.text
+                            for p in event.content.parts
+                            if getattr(p, "text", None)
+                        ]
+                        if texts:
+                            last_model_text = "\n".join(texts)
                     if event.is_final_response():
                         parts = event.content.parts if event.content else []
-                        final_answer = (
-                            " ".join(p.text for p in parts if p.text) or "No response."
+                        text = " ".join(
+                            p.text for p in parts if getattr(p, "text", None)
                         )
+                        final_answer = text or last_model_text
+                        if not final_answer:
+                            final_answer = EMPTY_FINAL_RESPONSE_MESSAGE
+                            logger.warning(
+                                "Empty final ADK response for query=%r "
+                                "event=%r",
+                                query[:200],
+                                event,
+                            )
                         break
 
             if final_answer is not None:

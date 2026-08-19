@@ -24,9 +24,9 @@ from dotenv import load_dotenv
 from google.genai import types as genai_types
 from google.protobuf import json_format
 from vertexai import agent_engines
-from vertexai.preview.reasoning_engines import A2aAgent, AdkApp
+from vertexai.preview.reasoning_engines import A2aAgent
 
-from financial_advisor.agent import root_agent
+from financial_advisor.adk_app import build_adk_app
 
 
 def _patch_protobuf_json_for_pydantic_agent_cards() -> None:
@@ -80,11 +80,17 @@ flags.mark_bool_flags_as_mutual_exclusive(
 
 # Floors required for Agent Engine Observability settings in Cloud Console.
 AGENT_ENGINE_REQUIREMENTS = [
-    "google-adk (>=1.18.0)",
+    # Pin ADK to match local pickle host; loose floors caused runtime
+    # canonical_model TypeError after Agent Engine upgraded ADK.
+    "google-adk==2.6.0",
     "google-cloud-aiplatform[agent_engines] (>=1.126.1)",
     "google-genai (>=1.9.0)",
     "pydantic (>=2.10.6,<3.0.0)",
     "absl-py (>=2.2.1,<3.0.0)",
+    # Required for Agent Engine OpenTelemetry GenAI/http spans when telemetry is on.
+    "opentelemetry-instrumentation-google-genai (>=0.4b0)",
+    "opentelemetry-instrumentation-httpx (>=0.50b0)",
+    "opentelemetry-instrumentation-grpc (>=0.50b0)",
 ]
 
 A2A_AGENT_ENGINE_REQUIREMENTS = [
@@ -93,22 +99,38 @@ A2A_AGENT_ENGINE_REQUIREMENTS = [
     "starlette (>=0.40.0)",
     "sse-starlette (>=2.0.0)",
     "google-cloud-storage (>=2.14.0)",
-    # Required for Agent Engine OpenTelemetry GenAI/http spans when telemetry is on.
-    "opentelemetry-instrumentation-google-genai (>=0.4b0)",
-    "opentelemetry-instrumentation-httpx (>=0.50b0)",
-    "opentelemetry-instrumentation-grpc (>=0.50b0)",
     "opentelemetry-instrumentation-fastapi (>=0.50b0)",
 ]
 
 # Enables traces/logs in Agent Engine + GenAI semantic conventions.
+# NOTE: Do NOT set OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental
+# with AGENT_IDENTITY. Vertex AdkApp then uses CloudLoggingExporter over gRPC
+# without mTLS wiring → 401 Unauthenticated on write_log_entries
+# (adk-python#6328 / AdkApp instrumentor branch).
 AGENT_ENGINE_ENV_VARS = {
     "GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY": "true",
-    "OTEL_SEMCONV_STABILITY_OPT_IN": "gen_ai_latest_experimental",
     "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "EVENT_ONLY",
     "ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS": "false",
+    # Package __init__ defaults LOCATION=global for GenAI; Agent Engine needs region.
+    "GOOGLE_CLOUD_LOCATION": "us-central1",
 }
 
 A2A_DISPLAY_NAME = "financial-advisor-a2a"
+ADK_DISPLAY_NAME = "financial-advisor-adk"
+
+# Client-to-Agent gateway with Model Armor CONTENT_AUTHZ (us-central1).
+# Shared by ADK (streamQuery sanitized) and A2A (gateway attached; A2A
+# message:send ingress not sanitized by Model Armor — see docs/).
+INGRESS_AGENT_GATEWAY = (
+    "projects/gemini-agent-101/locations/us-central1/"
+    "agentGateways/financial-advisor-ingress-gw"
+)
+
+ADK_DESCRIPTION = (
+    "ADK financial advisor (data/trading/execution/risk). "
+    "Ingress via Agent Gateway + Model Armor template "
+    "financial-advisor-security. Telemetry enabled."
+)
 
 
 def _a2a_env_vars(bucket: str) -> dict[str, str]:
@@ -120,13 +142,32 @@ def _a2a_env_vars(bucket: str) -> dict[str, str]:
     }
 
 
-def _build_adk_app() -> AdkApp:
+def _ingress_gateway_config() -> dict[str, Any]:
+    """Route agent ingress through Agent Gateway + Model Armor."""
+    return {
+        "client_to_agent_config": {
+            "agent_gateway": INGRESS_AGENT_GATEWAY,
+        }
+    }
+
+
+def _vertex_client(*, project_id: str, location: str) -> Any:
+    return vertexai.Client(
+        project=project_id,
+        location=location,
+        http_options=genai_types.HttpOptions(api_version="v1beta1"),
+    )
+
+
+def _build_adk_app():
     """Build the AdkApp used for create/update.
 
+    Uses FinancialAdvisorAdkApp so set_up re-imports the agent graph (avoids
+    pickle/pydantic private-state breakage on Agent Engine).
     enable_tracing is left unset so the Cloud Console telemetry toggle and
     GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY control observability.
     """
-    return AdkApp(agent=root_agent)
+    return build_adk_app()
 
 
 def _build_a2a_agent() -> A2aAgent:
@@ -143,17 +184,6 @@ def _build_a2a_agent() -> A2aAgent:
     )
 
 
-def create() -> None:
-    """Creates an ADK agent engine for Financial Advisors."""
-    remote_agent = agent_engines.create(
-        _build_adk_app(),
-        display_name=FLAGS.display_name or root_agent.name,
-        requirements=AGENT_ENGINE_REQUIREMENTS,
-        env_vars=AGENT_ENGINE_ENV_VARS,
-    )
-    print(f"Created remote agent: {remote_agent.resource_name}")
-
-
 def create_a2a(*, project_id: str, location: str, bucket: str) -> None:
     """Creates an A2A agent engine exposing the Financial Advisor."""
     _patch_protobuf_json_for_pydantic_agent_cards()
@@ -161,12 +191,7 @@ def create_a2a(*, project_id: str, location: str, bucket: str) -> None:
     display_name = FLAGS.display_name or A2A_DISPLAY_NAME
     staging_bucket = f"gs://{bucket}"
 
-    # Prefer the GenAI Client path used by A2A Agent Runtime samples.
-    client = vertexai.Client(
-        project=project_id,
-        location=location,
-        http_options=genai_types.HttpOptions(api_version="v1beta1"),
-    )
+    client = _vertex_client(project_id=project_id, location=location)
     remote_agent = client.agent_engines.create(
         agent=a2a_agent,
         config={
@@ -177,6 +202,8 @@ def create_a2a(*, project_id: str, location: str, bucket: str) -> None:
             "env_vars": _a2a_env_vars(bucket),
             "staging_bucket": staging_bucket,
             "http_options": {"api_version": "v1beta1"},
+            "agent_gateway_config": _ingress_gateway_config(),
+            "identity_type": "AGENT_IDENTITY",
         },
     )
     resource_name = _resource_name(remote_agent)
@@ -189,11 +216,7 @@ def update_a2a(*, resource_id: str, project_id: str, location: str, bucket: str)
     _patch_protobuf_json_for_pydantic_agent_cards()
     a2a_agent = _build_a2a_agent()
     staging_bucket = f"gs://{bucket}"
-    client = vertexai.Client(
-        project=project_id,
-        location=location,
-        http_options=genai_types.HttpOptions(api_version="v1beta1"),
-    )
+    client = _vertex_client(project_id=project_id, location=location)
     remote_agent = client.agent_engines.update(
         name=resource_id,
         agent=a2a_agent,
@@ -205,6 +228,8 @@ def update_a2a(*, resource_id: str, project_id: str, location: str, bucket: str)
             "env_vars": _a2a_env_vars(bucket),
             "staging_bucket": staging_bucket,
             "http_options": {"api_version": "v1beta1"},
+            "agent_gateway_config": _ingress_gateway_config(),
+            "identity_type": "AGENT_IDENTITY",
         },
     )
     resource_name = _resource_name(remote_agent)
@@ -219,15 +244,55 @@ def _resource_name(remote_agent: Any) -> str:
     return str(remote_agent)
 
 
-def update(resource_id: str) -> None:
-    """Updates an existing agent engine with current code and observability deps."""
-    remote_agent = agent_engines.update(
-        resource_id,
-        agent_engine=_build_adk_app(),
-        requirements=AGENT_ENGINE_REQUIREMENTS,
-        env_vars=AGENT_ENGINE_ENV_VARS,
+def create(*, project_id: str, location: str, bucket: str) -> None:
+    """Creates an ADK agent engine for Financial Advisors."""
+    display_name = FLAGS.display_name or ADK_DISPLAY_NAME
+    staging_bucket = f"gs://{bucket}"
+    client = _vertex_client(project_id=project_id, location=location)
+    remote_agent = client.agent_engines.create(
+        agent=_build_adk_app(),
+        config={
+            "display_name": display_name,
+            "description": ADK_DESCRIPTION,
+            "requirements": AGENT_ENGINE_REQUIREMENTS,
+            "extra_packages": ["./financial_advisor"],
+            "env_vars": AGENT_ENGINE_ENV_VARS,
+            "staging_bucket": staging_bucket,
+            "http_options": {"api_version": "v1beta1"},
+            "agent_gateway_config": _ingress_gateway_config(),
+            "identity_type": "AGENT_IDENTITY",
+        },
     )
-    print(f"Updated remote agent: {remote_agent.resource_name}")
+    resource_name = _resource_name(remote_agent)
+    print(f"Created ADK remote agent: {resource_name}")
+    print(f"Display name: {display_name}")
+
+
+def update(
+    *, resource_id: str, project_id: str, location: str, bucket: str
+) -> None:
+    """Updates ADK agent: rename, telemetry, Gateway + Model Armor ingress."""
+    display_name = FLAGS.display_name or ADK_DISPLAY_NAME
+    staging_bucket = f"gs://{bucket}"
+    client = _vertex_client(project_id=project_id, location=location)
+    remote_agent = client.agent_engines.update(
+        name=resource_id,
+        agent=_build_adk_app(),
+        config={
+            "display_name": display_name,
+            "description": ADK_DESCRIPTION,
+            "requirements": AGENT_ENGINE_REQUIREMENTS,
+            "extra_packages": ["./financial_advisor"],
+            "env_vars": AGENT_ENGINE_ENV_VARS,
+            "staging_bucket": staging_bucket,
+            "http_options": {"api_version": "v1beta1"},
+            "agent_gateway_config": _ingress_gateway_config(),
+            "identity_type": "AGENT_IDENTITY",
+        },
+    )
+    resource_name = _resource_name(remote_agent)
+    print(f"Updated ADK remote agent: {resource_name}")
+    print(f"Display name: {display_name}")
 
 
 def delete(resource_id: str) -> None:
@@ -301,14 +366,19 @@ def main(argv: list[str]) -> None:
     if FLAGS.list:
         list_agents()
     elif FLAGS.create:
-        create()
+        create(project_id=project_id, location=location, bucket=bucket)
     elif FLAGS.create_a2a:
         create_a2a(project_id=project_id, location=location, bucket=bucket)
     elif FLAGS.update:
         if not FLAGS.resource_id:
             print("resource_id is required for update")
             return
-        update(FLAGS.resource_id)
+        update(
+            resource_id=FLAGS.resource_id,
+            project_id=project_id,
+            location=location,
+            bucket=bucket,
+        )
     elif FLAGS.update_a2a:
         if not FLAGS.resource_id:
             print("resource_id is required for update_a2a")
