@@ -1,6 +1,6 @@
 # 6. Comparison & the real gaps
 
-**[← Red-team results](05-red-team-results.md)** | [Back to index](README.md)
+**[← Red-team results](05-red-team-results.md)** | Next: [Support tickets to file](07-support-tickets.md) | [Back to index](README.md)
 
 ## Contents
 
@@ -28,7 +28,9 @@
 
 These are the items where we've confirmed the behavior live but can't fix
 it from our side — they need a support ticket / product feedback, not a
-config change.
+config change. Ready-to-file drafts for all six (title, repro steps,
+evidence, exact questions) are in
+[page 7](07-support-tickets.md).
 
 1. **Product gap — no Gateway Model Armor coverage for A2A ingress.**
    `financial-advisor-a2a`'s `message:send` traffic never reaches the

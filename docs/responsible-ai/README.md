@@ -39,6 +39,9 @@ Engines `financial-advisor-adk` (`4756172291677618176`) and
 6. [Comparison & the real gaps](06-comparison-and-gaps.md) — ADK vs. A2A,
    what's possible vs. not, and the specific list of items that need a
    Google Cloud support ticket rather than a config change on our side.
+7. [Support tickets to file](07-support-tickets.md) — ready-to-file drafts
+   for all six gaps: title, product area, repro steps, evidence, and the
+   exact questions to ask, plus a recommended filing order.
 
 ## Five-minute summary
 
