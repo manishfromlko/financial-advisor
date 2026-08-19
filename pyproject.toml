@@ -36,9 +36,15 @@ deployment = [
 ]
 
 [tool.ruff]
-extend = "../../../pyproject.toml"
+# Was `extend = "../../../pyproject.toml"`, inherited from this sample's
+# original location inside the google/adk-samples monorepo. That path
+# doesn't exist in this standalone repo and broke `ruff` entirely
+# (`Failed to read /Users/pyproject.toml`) — inlined a standalone config.
+line-length = 88
+target-version = "py310"
 
 [tool.ruff.lint]
+select = ["E", "F", "I", "W"]
 ignore = ["C901"]
 
 [tool.ruff.lint.per-file-ignores]
@@ -68,6 +74,11 @@ exclude = [".venv"]
 [tool.pytest.ini_options]
 pythonpath = "."
 asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+# Live tests hit the real deployed Reasoning Engines and need gcloud auth;
+# keep them opt-in (`uv run pytest -m live tests/live`) so a plain
+# `uv run pytest` (e.g. in CI) doesn't fail on missing credentials.
+addopts = "-m 'not live'"
 markers = [
     "live: hits deployed Agent Engine Playground paths (A2A message:send or ADK streamQuery; needs gcloud auth)",
 ]
